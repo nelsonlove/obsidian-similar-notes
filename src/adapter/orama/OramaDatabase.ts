@@ -435,34 +435,37 @@ export class OramaWorker {
         }
         const generation = this.contentGeneration.get(path) ?? 0;
         const epoch = this.contentEpoch;
-        // eslint-disable-next-line prefer-const -- assigned once; declared first so its own finally can compare against it
-        let load!: Promise<Map<number, string>>;
-        load = (async () => {
-            try {
-                const byIndex = new Map<number, string>();
-                for (const chunk of await this.storage.getByPath(path)) {
-                    byIndex.set(chunk.chunkIndex, chunk.content);
-                }
-                // A write to the path (or an init) while the read was in
-                // flight bumped the generation (or epoch); what was read may
-                // predate it, so do not cache it. The result is still
-                // returned for this query.
-                if (
-                    epoch === this.contentEpoch &&
-                    (this.contentGeneration.get(path) ?? 0) === generation
-                ) {
-                    this.cacheContent(path, byIndex);
-                }
-                return byIndex;
-            } finally {
-                // Only drop our own entry; a write may have replaced it.
-                if (this.contentLoads.get(path) === load) {
-                    this.contentLoads.delete(path);
-                }
-            }
-        })();
+        const load = this.readContentForPath(path, generation, epoch);
         this.contentLoads.set(path, load);
+        // When the read settles, drop its in-flight entry, but only its own:
+        // a write may have replaced it with a newer read.
+        load.finally(() => {
+            if (this.contentLoads.get(path) === load) {
+                this.contentLoads.delete(path);
+            }
+        }).catch(() => undefined);
         return load;
+    }
+
+    private async readContentForPath(
+        path: string,
+        generation: number,
+        epoch: number
+    ): Promise<Map<number, string>> {
+        const byIndex = new Map<number, string>();
+        for (const chunk of await this.storage.getByPath(path)) {
+            byIndex.set(chunk.chunkIndex, chunk.content);
+        }
+        // A write to the path (or an init) while the read was in flight
+        // bumped the generation (or epoch); what was read may predate it, so
+        // do not cache it. The result is still returned for this query.
+        if (
+            epoch === this.contentEpoch &&
+            (this.contentGeneration.get(path) ?? 0) === generation
+        ) {
+            this.cacheContent(path, byIndex);
+        }
+        return byIndex;
     }
 
     private dropCachedContent(path: string): void {
