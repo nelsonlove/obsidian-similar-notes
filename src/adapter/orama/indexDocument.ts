@@ -56,13 +56,14 @@ export function createIndexSchema(vectorSize: number): IndexSchema {
     };
 }
 
+/** Keeps ids unique across re-inserts of the same path and chunk index. */
+let nextDocumentSeq = 0;
+
 /**
  * Build the slim index document for a stored chunk. The IndexedDB record keeps
  * its `number[]` embedding (storage format unchanged); only the in-memory copy
  * is compacted, after insertion, by the plugin below.
  */
-let nextDocumentSeq = 0;
-
 export function toIndexDocument(chunk: NoteChunkInternal): IndexDocument {
     return {
         id: `${chunk.pathHash}:${chunk.chunkIndex}:${nextDocumentSeq++}`,
@@ -151,8 +152,10 @@ function compactEmbedding(orama: AnyOrama, doc: unknown, property: string): void
  * Orama plugin: after each insert, replace the stored document's `number[]`
  * embedding with the vector index's own Float32Array. `remove()` still finds a
  * defined value for the field, so the vector is still dropped with the doc.
- * `insertMultiple` skips the per-document hook and fires the multiple hook
- * once, so both are implemented.
+ * `insertMultiple` runs `insert` per document (so `afterInsert` fires for
+ * each) and then `afterInsertMultiple` once; the second pass is a no-op for
+ * an already-compacted document and is kept as a guard for a future Orama
+ * that batches differently.
  */
 export function createSlimIndexPlugin(property = "embedding"): OramaPlugin {
     return {

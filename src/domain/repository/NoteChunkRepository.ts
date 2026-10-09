@@ -43,6 +43,8 @@ export interface NoteChunkRepository {
 
     /**
      * Finds and returns NoteChunks that are most similar to the given embedding vector.
+     * Returned chunks carry their text but no embedding (`embedding` is empty);
+     * use getByPath for a chunk's embedding.
      *
      * @param queryEmbedding - The embedding vector to use as the search criteria
      * @param limit - Maximum number of NoteChunks to return

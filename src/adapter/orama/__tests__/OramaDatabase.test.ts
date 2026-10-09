@@ -117,6 +117,30 @@ describe("OramaWorker: slim index, chunk text read back from IndexedDB", () => {
         expect(hits[0].chunk).toMatchObject({ path: "a.md", content: "persisted" });
     });
 
+    test("removeByPath clears every chunk of a note with more than one search page", async () => {
+        const many = Array.from({ length: 150 }, (_, i) =>
+            dto({ path: "big.md", chunkIndex: i, totalChunks: 150, content: `c${i}`, embedding: unit(1, i / 150, 0, 0) })
+        );
+        await worker.putMulti([...many, dto({ path: "other.md", embedding: unit(0, 0, 1, 0) })]);
+        expect(worker.count()).toBe(151);
+
+        expect(await worker.removeByPath("big.md")).toBe(true);
+        expect(worker.count()).toBe(1);
+
+        // No ghost hits with blank text.
+        const hits = await worker.findSimilarChunks(unit(1, 0.5, 0, 0), 10);
+        expect(hits.map((h) => h.chunk.path)).toEqual(["other.md"]);
+    });
+
+    test("re-indexing a note refreshes the text its hits return", async () => {
+        await worker.putMulti([dto({ path: "a.md", content: "old", embedding: unit(1, 0, 0, 0) })]);
+        expect((await worker.findSimilarChunks(unit(1, 0, 0, 0), 5))[0].chunk.content).toBe("old");
+
+        await worker.removeByPath("a.md");
+        await worker.putMulti([dto({ path: "a.md", content: "new", embedding: unit(1, 0, 0, 0) })]);
+        expect((await worker.findSimilarChunks(unit(1, 0, 0, 0), 5))[0].chunk.content).toBe("new");
+    });
+
     test("a chunk whose vector size is wrong is skipped, not inserted", async () => {
         await worker.putMulti([dto({ path: "bad.md", embedding: [1, 0] })]);
         expect(worker.count()).toBe(0);
