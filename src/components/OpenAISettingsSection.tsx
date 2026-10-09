@@ -1,24 +1,35 @@
 import { OpenAIClient } from "@/adapter/openai";
 import type { SimilarNotesSettings } from "@/application/SettingsService";
-import { Notice } from "obsidian";
-import type { Setting } from "obsidian";
+import { ApiKeyStore } from "@/infrastructure/ApiKeyStore";
+import { Notice, SecretComponent } from "obsidian";
+import type { App, Setting } from "obsidian";
 
 export type SettingBuilder = (setting: Setting) => void;
 
 interface OpenAISettingsSectionProps {
+    app: App;
     settings: SimilarNotesSettings;
     tempOpenaiUrl: string | undefined;
-    tempOpenaiApiKey: string | undefined;
+    /** ID of the secret in Obsidian's secret storage, never the key itself. */
+    tempOpenaiApiKeySecretId: string | undefined;
     tempOpenaiModel: string | undefined;
     tempOpenaiMaxTokens: number | undefined;
     onOpenaiUrlChange: (value: string) => void;
-    onOpenaiApiKeyChange: (value: string) => void;
+    onOpenaiApiKeySecretIdChange: (value: string) => void;
     onOpenaiModelChange: (value: string) => void;
     onOpenaiMaxTokensChange: (value: number | undefined) => void;
     onRender: () => void;
     // Getter functions to get latest temp values (to avoid closure issues)
-    getTempValues?: () => { url?: string; apiKey?: string; model?: string; maxTokens?: number };
+    getTempValues?: () => {
+        url?: string;
+        apiKeySecretId?: string;
+        model?: string;
+        maxTokens?: number;
+    };
 }
+
+export const SECRET_STORAGE_UNAVAILABLE_MESSAGE =
+    "Obsidian 1.11.4 or newer is needed to keep the API key in secret storage. No key can be saved or used until then.";
 
 // Predefined OpenAI embedding models
 const OPENAI_MODELS = [
@@ -31,21 +42,24 @@ const DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
 
 export function getOpenAISettingBuilders(props: OpenAISettingsSectionProps): SettingBuilder[] {
     const {
+        app,
         settings,
         tempOpenaiUrl,
-        tempOpenaiApiKey,
+        tempOpenaiApiKeySecretId,
         tempOpenaiModel,
         tempOpenaiMaxTokens,
         onOpenaiUrlChange,
-        onOpenaiApiKeyChange,
+        onOpenaiApiKeySecretIdChange,
         onOpenaiModelChange,
         onOpenaiMaxTokensChange,
         onRender,
         getTempValues,
     } = props;
 
+    const keyStore = ApiKeyStore.fromApp(app);
     const openaiUrl = tempOpenaiUrl ?? settings.openaiUrl ?? DEFAULT_OPENAI_URL;
-    const openaiApiKey = tempOpenaiApiKey ?? settings.openaiApiKey ?? "";
+    const openaiApiKeySecretId =
+        tempOpenaiApiKeySecretId ?? settings.openaiApiKeySecretId ?? "";
     const openaiModel = tempOpenaiModel ?? settings.openaiModel ?? "text-embedding-3-small";
     const isCustomModel = !OPENAI_MODELS.some((m) => m.id === openaiModel);
 
@@ -63,19 +77,22 @@ export function getOpenAISettingBuilders(props: OpenAISettingsSectionProps): Set
                         });
                 });
         },
-        // API Key
+        // API key: picked from Obsidian's secret storage (Settings → General →
+        // Secrets). The key value never touches data.json; only the secret's
+        // ID is saved. There is no plain text box and no fallback.
         (setting) => {
-            setting
-                .setName("API Key")
-                .setDesc("Your OpenAI API key (required for OpenAI, optional for local servers)")
-                .addText((text) => {
-                    text.setPlaceholder("sk-...")
-                        .setValue(openaiApiKey)
-                        .onChange((value) => {
-                            onOpenaiApiKeyChange(value);
-                        });
-                    // Make it a password field
-                    text.inputEl.type = "password";
+            setting.setName("API key");
+            if (!keyStore.isAvailable()) {
+                setting.setDesc(SECRET_STORAGE_UNAVAILABLE_MESSAGE);
+                return;
+            }
+            setting.setDesc(
+                "Pick the secret that holds your OpenAI API key (required for OpenAI, optional for local servers). Add one under Settings → General → Secrets."
+            );
+            new SecretComponent(app, setting.controlEl)
+                .setValue(openaiApiKeySecretId)
+                .onChange((value) => {
+                    onOpenaiApiKeySecretIdChange(value);
                 });
         },
         // Model dropdown
@@ -149,7 +166,8 @@ export function getOpenAISettingBuilders(props: OpenAISettingsSectionProps): Set
                     // Use getter function to get latest temp values (avoids closure issues)
                     const tempValues = getTempValues?.() ?? {};
                     const url = tempValues.url ?? settings.openaiUrl ?? DEFAULT_OPENAI_URL;
-                    const apiKey = tempValues.apiKey ?? settings.openaiApiKey;
+                    const secretId = tempValues.apiKeySecretId ?? settings.openaiApiKeySecretId;
+                    const apiKey = () => keyStore.getApiKey(secretId) ?? undefined;
                     const model = tempValues.model ?? settings.openaiModel ?? "text-embedding-3-small";
 
                     if (!model) {
@@ -160,7 +178,7 @@ export function getOpenAISettingBuilders(props: OpenAISettingsSectionProps): Set
                     new Notice(`Testing connection to ${url} with model ${model}...`);
 
                     try {
-                        const client = new OpenAIClient(url, apiKey || undefined);
+                        const client = new OpenAIClient(url, apiKey);
                         const success = await client.testConnection(model);
 
                         if (success) {

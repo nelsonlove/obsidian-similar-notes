@@ -1,5 +1,5 @@
 import { GeminiClient } from "@/adapter/gemini";
-import { UsageTracker } from "@/adapter/openai";
+import { type ApiKeySource, UsageTracker } from "@/adapter/openai";
 import type { SettingsService } from "@/application/SettingsService";
 import { handleEmbeddingLoadError } from "@/utils/errorHandling";
 import log from "loglevel";
@@ -7,7 +7,8 @@ import { type Observable, Subject } from "rxjs";
 import { type EmbeddingProvider, type ModelInfo } from "./EmbeddingProvider";
 
 export interface GeminiConfig {
-    apiKey?: string;
+    /** A key value, or a function read on every request (see ApiKeySource). */
+    apiKey?: ApiKeySource;
     model: string;
     settingsService?: SettingsService;
 }

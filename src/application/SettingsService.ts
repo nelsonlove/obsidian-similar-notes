@@ -31,11 +31,13 @@ export interface SimilarNotesSettings {
     ollamaUrl?: string; // Ollama server URL
     ollamaModel?: string; // Ollama model name
     openaiUrl?: string; // OpenAI-compatible server URL (default: https://api.openai.com/v1)
-    openaiApiKey?: string; // OpenAI API key
+    openaiApiKey?: string; // LEGACY, never written: moved into Obsidian secret storage on load (ApiKeyStore)
+    openaiApiKeySecretId?: string; // ID of the secret in app.secretStorage that holds the OpenAI API key
     openaiModel?: string; // OpenAI model name (default: text-embedding-3-small)
     openaiMaxTokens?: number; // Max tokens for custom OpenAI-compatible models (default: 8191)
     openaiPricePerMillionTokens?: number; // Price per million tokens for cost estimation
-    geminiApiKey?: string; // Google Gemini API key
+    geminiApiKey?: string; // LEGACY, never written: moved into Obsidian secret storage on load (ApiKeyStore)
+    geminiApiKeySecretId?: string; // ID of the secret in app.secretStorage that holds the Gemini API key
     geminiModel?: string; // Gemini model name (default: text-embedding-004)
     usageStats?: UsageStats; // API usage statistics
     includeFrontmatter: boolean; // Whether to include frontmatter in indexing

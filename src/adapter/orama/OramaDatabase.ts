@@ -15,24 +15,45 @@ import {
     search,
 } from "@orama/orama";
 import log from "loglevel";
+import {
+    createIndexDocumentPropertiesGetter,
+    createIndexSchema,
+    createSlimIndexPlugin,
+    type IndexDocument,
+    type IndexSchema,
+    toIndexDocument,
+} from "./indexDocument";
 
-type Schema = {
-    path: "string";
-    pathHash: "string";
-    title: "string";
-    embedding: `vector[${number}]`;
-    lastUpdated: "number";
-    content: "string";
-    chunkIndex: "number";
-    totalChunks: "number";
-};
+type Schema = IndexSchema;
 type Doc = TypedDocument<Orama<Schema>>;
+
+/** Page size for the remove-by-path search loop. */
+const REMOVE_PAGE_SIZE = 100;
+/** Upper bound on chunks whose text is cached for hits (~1.5 KB each). */
+const CONTENT_CACHE_MAX_CHUNKS = 2000;
 
 export class OramaWorker {
     private db: Orama<Schema> | null = null;
     private schema: Schema;
     private vectorSize: number;
     private storage: IndexedDBChunkStorage;
+    /**
+     * Chunk text by note path, keyed by chunk index, for recently loaded hit
+     * paths. The index holds no text, and SimilarNoteFinder queries once per
+     * chunk of the active note, so the same hit paths come up again and
+     * again; this keeps each path's text to one IndexedDB read per write to
+     * that path. Bounded by chunk count (oldest loaded path evicted first);
+     * invalidated on every write to the path, including a write that lands
+     * while a read for the path is in flight (see contentGeneration).
+     */
+    private contentCache = new Map<string, Map<number, string>>();
+    private contentCacheChunks = 0;
+    /** In-flight reads by path, so concurrent misses share one read. */
+    private contentLoads = new Map<string, Promise<Map<number, string>>>();
+    /** Bumped on every write to a path; a read caches only if unchanged. */
+    private contentGeneration = new Map<string, number>();
+    /** Bumped on every init; a read from before an init never caches. */
+    private contentEpoch = 0;
 
     setLogLevel(level: log.LogLevelDesc): void {
         log.setLevel(level);
@@ -46,16 +67,12 @@ export class OramaWorker {
     ): Promise<void> {
         this.vectorSize = vectorSize;
         this.db = null;
-        this.schema = {
-            path: "string",
-            pathHash: "string",
-            title: "string",
-            embedding: `vector[${this.vectorSize}]`,
-            lastUpdated: "number",
-            content: "string",
-            chunkIndex: "number",
-            totalChunks: "number",
-        } as const;
+        this.schema = createIndexSchema(vectorSize);
+        this.contentCache.clear();
+        this.contentCacheChunks = 0;
+        this.contentLoads.clear();
+        this.contentGeneration.clear();
+        this.contentEpoch++;
 
         try {
             // Initialize IndexedDB storage with vault-specific ID
@@ -68,10 +85,15 @@ export class OramaWorker {
                 log.info("Cleared IndexedDB for reindexing");
             }
 
-            // Create empty Orama database
-            this.db = await create({
+            // Create empty Orama database. The index holds slim documents
+            // (no chunk text, one Float32Array per chunk) — see indexDocument.ts.
+            this.db = (await create({
                 schema: this.schema,
-            });
+                components: {
+                    getDocumentProperties: createIndexDocumentPropertiesGetter() as never,
+                },
+                plugins: [createSlimIndexPlugin()],
+            })) as Orama<Schema>;
 
             if (loadExistingData) {
                 // Load data from IndexedDB in batches
@@ -81,7 +103,7 @@ export class OramaWorker {
                     100,
                     async (batch) => {
                         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                        await insertMultiple(this.db!, batch as Doc[]);
+                        await insertMultiple(this.db!, this.toDocs(batch));
                     },
                     (processed, total) => {
                         loadedCount = processed;
@@ -124,9 +146,10 @@ export class OramaWorker {
             lastUpdated: Date.now(),
         };
 
-        // Insert to both Orama (in-memory) and IndexedDB (persistent)
-        await insert(this.db, internalNoteChunk as Doc);
+        // Insert to both Orama (in-memory, slim) and IndexedDB (persistent, full)
+        await insert(this.db, this.toDoc(internalNoteChunk));
         await this.storage.put(internalNoteChunk);
+        this.dropCachedContent(noteChunk.path);
     }
 
     async putMulti(chunks: NoteChunkDTO[]): Promise<void> {
@@ -156,9 +179,21 @@ export class OramaWorker {
             }))
         );
 
-        // Insert to both Orama (in-memory) and IndexedDB (persistent)
-        await insertMultiple(this.db, internalChunks as Doc[]);
+        // Insert to both Orama (in-memory, slim) and IndexedDB (persistent, full)
+        await insertMultiple(this.db, this.toDocs(internalChunks));
         await this.storage.putMulti(internalChunks);
+        for (const chunk of internalChunks) {
+            this.dropCachedContent(chunk.path);
+        }
+    }
+
+    /** Slim in-memory shape of a stored chunk (see indexDocument.ts). */
+    private toDoc(chunk: NoteChunkInternal): Doc {
+        return toIndexDocument(chunk) as unknown as Doc;
+    }
+
+    private toDocs(chunks: NoteChunkInternal[]): Doc[] {
+        return chunks.map((chunk) => this.toDoc(chunk));
     }
 
     /**
@@ -203,22 +238,41 @@ export class OramaWorker {
             throw new Error("Database not loaded");
         }
         const pathHash = await this.calculatePathHash(path);
-        const results = await search(this.db, {
-            term: pathHash,
-            properties: ["pathHash"],
-            exact: true,
-            limit: 100,
-        });
 
-        // Remove from Orama
-        if (results.hits.length > 0) {
+        // Remove from Orama. The search is paged, so loop until no hit is
+        // left: a note with more than one page of chunks must not leave
+        // stale documents behind (they would surface as hits with no text).
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+            const results = await search(this.db, {
+                term: pathHash,
+                properties: ["pathHash"],
+                exact: true,
+                limit: REMOVE_PAGE_SIZE,
+            });
+            if (results.hits.length === 0) {
+                break;
+            }
+            let removed = 0;
             for (const hit of results.hits) {
-                await remove(this.db, hit.id);
+                if (await remove(this.db, hit.id)) {
+                    removed++;
+                }
+            }
+            if (removed === 0) {
+                // A page that cannot be removed would loop forever. Throw so
+                // the change reaches handleChangeFailure (retry, then
+                // Errored) instead of being recorded as processed with
+                // stale documents left in the index.
+                throw new Error(
+                    `removeByPath: ${results.hits.length} indexed chunks of ${path} could not be removed`
+                );
             }
         }
 
         // Remove from IndexedDB
         const removedCount = await this.storage.removeByPath(path);
+        this.dropCachedContent(path);
 
         return removedCount > 0;
     }
@@ -250,8 +304,9 @@ export class OramaWorker {
         // the renamed copies back. Embeddings are preserved as-is, so the
         // search results for the moved note are unchanged.
         await this.removeByPath(oldPath);
-        await insertMultiple(this.db, renamed as Doc[]);
+        await insertMultiple(this.db, this.toDocs(renamed));
         await this.storage.putMulti(renamed);
+        this.dropCachedContent(newPath);
 
         return true;
     }
@@ -287,7 +342,7 @@ export class OramaWorker {
 
         const batchSize = limit * 2;
         let offset = 0;
-        let allResults: { chunk: NoteChunkDTO; score: number }[] = [];
+        let hits: { doc: IndexDocument; score: number }[] = [];
 
         // eslint-disable-next-line no-constant-condition
         while (true) {
@@ -317,28 +372,16 @@ export class OramaWorker {
                 return true;
             });
 
-            // Add filtered results to our collection
-            allResults = allResults.concat(
-                filteredHits.map((hit) => {
-                    const doc = hit.document as unknown as Doc;
-                    const dto: NoteChunkDTO = {
-                        path: doc.path,
-                        title: doc.title,
-                        content: doc.content,
-                        chunkIndex: doc.chunkIndex,
-                        totalChunks: doc.totalChunks,
-                        embedding: doc.embedding as unknown as number[],
-                    };
-                    return {
-                        chunk: dto,
-                        score: hit.score,
-                    };
-                })
+            hits = hits.concat(
+                filteredHits.map((hit) => ({
+                    doc: hit.document as unknown as IndexDocument,
+                    score: hit.score,
+                }))
             );
 
             // If we have enough results, break the loop
-            if (allResults.length >= limit) {
-                allResults = allResults.slice(0, limit);
+            if (hits.length >= limit) {
+                hits = hits.slice(0, limit);
                 break;
             }
 
@@ -346,7 +389,117 @@ export class OramaWorker {
             offset += batchSize;
         }
 
-        return allResults;
+        // The index holds no chunk text; resolve it for the hit paths from
+        // the per-path cache, reading IndexedDB on a miss.
+        const contentByPath = await this.loadContent(
+            Array.from(new Set(hits.map((hit) => hit.doc.path)))
+        );
+
+        // Orama's vector search nulls the vector field on returned hits, so a
+        // hit never carries its embedding (it never did); callers that need
+        // embeddings use getByPath, which reads IndexedDB.
+        return hits.map(({ doc, score }) => ({
+            chunk: {
+                path: doc.path,
+                title: doc.title,
+                content: contentByPath.get(doc.path)?.get(doc.chunkIndex) ?? "",
+                chunkIndex: doc.chunkIndex,
+                totalChunks: doc.totalChunks,
+                embedding: [],
+            },
+            score,
+        }));
+    }
+
+    /** Chunk text per note path, keyed by chunk index; cached per path. */
+    private async loadContent(
+        paths: string[]
+    ): Promise<Map<string, Map<number, string>>> {
+        const result = new Map<string, Map<number, string>>();
+        await Promise.all(
+            paths.map(async (path) => {
+                result.set(path, await this.loadContentForPath(path));
+            })
+        );
+        return result;
+    }
+
+    private loadContentForPath(path: string): Promise<Map<number, string>> {
+        const cached = this.contentCache.get(path);
+        if (cached) {
+            return Promise.resolve(cached);
+        }
+        const inFlight = this.contentLoads.get(path);
+        if (inFlight) {
+            return inFlight;
+        }
+        const generation = this.contentGeneration.get(path) ?? 0;
+        const epoch = this.contentEpoch;
+        const load = this.readContentForPath(path, generation, epoch);
+        this.contentLoads.set(path, load);
+        // When the read settles, drop its in-flight entry, but only its own:
+        // a write may have replaced it with a newer read.
+        load.finally(() => {
+            if (this.contentLoads.get(path) === load) {
+                this.contentLoads.delete(path);
+            }
+        }).catch(() => undefined);
+        return load;
+    }
+
+    private async readContentForPath(
+        path: string,
+        generation: number,
+        epoch: number
+    ): Promise<Map<number, string>> {
+        const byIndex = new Map<number, string>();
+        for (const chunk of await this.storage.getByPath(path)) {
+            byIndex.set(chunk.chunkIndex, chunk.content);
+        }
+        // A write to the path (or an init) while the read was in flight
+        // bumped the generation (or epoch); what was read may predate it, so
+        // do not cache it. The result is still returned for this query.
+        if (
+            epoch === this.contentEpoch &&
+            (this.contentGeneration.get(path) ?? 0) === generation
+        ) {
+            this.cacheContent(path, byIndex);
+        }
+        return byIndex;
+    }
+
+    private dropCachedContent(path: string): void {
+        this.contentGeneration.set(path, (this.contentGeneration.get(path) ?? 0) + 1);
+        // A query arriving after this write must not join a pre-write read.
+        this.contentLoads.delete(path);
+        const cached = this.contentCache.get(path);
+        if (cached) {
+            this.contentCacheChunks -= cached.size;
+            this.contentCache.delete(path);
+        }
+    }
+
+    private cacheContent(path: string, byIndex: Map<number, string>): void {
+        if (byIndex.size > CONTENT_CACHE_MAX_CHUNKS) {
+            return;
+        }
+        // Replace, never double-count, an entry already present for the path.
+        const existing = this.contentCache.get(path);
+        if (existing) {
+            this.contentCacheChunks -= existing.size;
+            this.contentCache.delete(path);
+        }
+        // Evict oldest paths (Map keeps insertion order) until this one fits.
+        while (
+            this.contentCache.size > 0 &&
+            this.contentCacheChunks + byIndex.size > CONTENT_CACHE_MAX_CHUNKS
+        ) {
+            const oldest = this.contentCache.keys().next().value as string;
+            this.contentCacheChunks -= this.contentCache.get(oldest)?.size ?? 0;
+            this.contentCache.delete(oldest);
+        }
+        this.contentCache.set(path, byIndex);
+        this.contentCacheChunks += byIndex.size;
     }
 
     count(): number {

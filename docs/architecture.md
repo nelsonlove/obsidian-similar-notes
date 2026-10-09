@@ -76,7 +76,7 @@ src/
 
 9. **Frontmatter-based file exclusion**: Notes can opt out of indexing from inside the note via frontmatter rules (`key` / `key: value`, matched against the parsed `metadataCache` frontmatter, never raw YAML). The authoritative check runs at processing time in `NoteIndexingService` (metadataCache lags vault events), with `NoteChangeQueue.analyzeSyncNeeds` also applying it during bulk sync. See `docs/frontmatter-exclusion-spec.md`.
 
-10. **Settings Storage**: Plugin settings are stored in Obsidian's data.json. UI for settings uses React components.
+10. **Settings Storage**: Plugin settings are stored in Obsidian's data.json — except the provider API keys, which live in Obsidian's secret storage (item 14). UI for settings uses React components.
 
    - **Sectioning**: The settings tab is divided into top-level sections using Obsidian's `SettingGroup` (`@since 1.11.0`) — one per area (e.g. Model, Index, Exclude files from index, Exclude content from index, Display, Debug & Support). Each section is built by a `*SettingsSection` class (e.g. `IndexSettingsSection`) that returns `SettingBuilder` arrays.
    - **Use sibling groups, not sub-headings.** `SettingGroup` cannot nest, and inserting `Setting.setHeading()` divider rows *inside* a group renders poorly (tried more than once and reverted). To break a crowded section into sub-areas, add another sibling top-level `SettingGroup` instead of nesting or in-group headings.
@@ -84,3 +84,9 @@ src/
 10. **Content Exclusion**: Supports RegExp patterns to exclude content from indexing (e.g., frontmatter, code blocks).
 
 11. **Command Palette**: Commands are implemented in `src/commands/` with an extensible structure for easy addition of new commands.
+
+12. **OpenAI request cap**: `OpenAIEmbeddingProvider.embedTexts` plans requests before sending: it refuses a single over-limit input, then splits a note's chunks into requests of at most `MAX_INPUTS_PER_REQUEST` (2048) inputs and `MAX_ESTIMATED_TOKENS_PER_REQUEST` (100,000) estimated tokens (`splitByBudget` in `src/utils/batching.ts`), sent sequentially. One request per note overran OpenAI's 300,000-token cap on long notes. See `docs/openai-request-cap-spec.md`.
+
+13. **Slim Orama index**: the in-memory Orama index holds `IndexDocument`s (`src/adapter/orama/indexDocument.ts`): no chunk text, and one Float32Array per chunk shared between the document store and the vector index (a post-insert plugin plus a `getDocumentProperties` override that hands typed arrays through). Chunk text stays in IndexedDB and is read back for the hits only. See `docs/orama-index-memory-spec.md`.
+
+14. **Provider API keys in secret storage**: the OpenAI and Gemini keys live in `app.secretStorage` (Obsidian 1.11.4+) and settings hold only their secret IDs; `ApiKeyStore` is the single read/write path and moves legacy `data.json` keys over once on load. No fallback to `data.json`. See `docs/openai-api-key-secret-storage-spec.md`.

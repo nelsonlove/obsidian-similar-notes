@@ -24,6 +24,7 @@ import { registerEditorDropHandler } from "./editor/registerEditorDropHandler";
 import type { NoteChunkRepository } from "./domain/repository/NoteChunkRepository";
 import type { NoteRepository } from "./domain/repository/NoteRepository";
 import { EmbeddingService } from "./domain/service/EmbeddingService";
+import { ApiKeyStore } from "./infrastructure/ApiKeyStore";
 import type { NoteChunkingService } from "./domain/service/NoteChunkingService";
 import { SimilarNoteFinder } from "./domain/service/SimilarNoteFinder";
 import { TextSearchService } from "./domain/service/TextSearchService";
@@ -39,6 +40,7 @@ const dbFileName = "similar-notes.json";
 export default class MainPlugin extends Plugin {
     private leafViewCoordinator: LeafViewCoordinator;
     private settingsService: SettingsService;
+    private apiKeyStore: ApiKeyStore;
     private noteChunkRepository: NoteChunkRepository;
     private noteChangeQueue: NoteChangeQueue;
     private modelService: EmbeddingService;
@@ -64,6 +66,17 @@ export default class MainPlugin extends Plugin {
         // Only initialize settings during onload
         this.settingsService = new SettingsService(this);
         await this.settingsService.load();
+
+        // Provider API keys (OpenAI, Gemini) live in Obsidian's secret storage,
+        // not in data.json (which Sync and vault backups carry). Move legacy
+        // keys over once; on an Obsidian without secret storage, leave them unused.
+        this.apiKeyStore = ApiKeyStore.fromApp(this.app);
+        const keyMigration = await this.apiKeyStore.migrateLegacyKeys(this.settingsService);
+        if (keyMigration === "secret-storage-unavailable") {
+            new Notice(
+                "Similar Notes: this Obsidian has no secret storage (needs 1.11.4 or newer). The API key in data.json is not used until Obsidian is updated."
+            );
+        }
 
         // Check if plugin version has changed and trigger reindex if needed
         const settings = this.settingsService.get();
@@ -163,7 +176,7 @@ export default class MainPlugin extends Plugin {
         this.settingTab.setErroredStore(this.erroredNoteStore);
 
         // Create services in proper dependency order
-        this.modelService = new EmbeddingService(this.settingsService);
+        this.modelService = new EmbeddingService(this.settingsService, this.apiKeyStore);
         this.noteChunkRepository = new OramaNoteChunkRepository(this.app.vault);
 
         // Set the model service in the settings tab

@@ -1,5 +1,6 @@
-import { OpenAIClient, UsageTracker } from "@/adapter/openai";
+import { type ApiKeySource, OpenAIClient, UsageTracker } from "@/adapter/openai";
 import type { SettingsService } from "@/application/SettingsService";
+import { splitByBudget } from "@/utils/batching";
 import { handleEmbeddingLoadError } from "@/utils/errorHandling";
 import log from "loglevel";
 import { type Observable, Subject } from "rxjs";
@@ -7,7 +8,8 @@ import { type EmbeddingProvider, type ModelInfo } from "./EmbeddingProvider";
 
 export interface OpenAIConfig {
     url: string;
-    apiKey?: string;
+    /** A key value, or a function read on every request (see ApiKeySource). */
+    apiKey?: ApiKeySource;
     model: string;
     maxTokens?: number;
     settingsService?: SettingsService;
@@ -15,6 +17,16 @@ export interface OpenAIConfig {
 
 // Default max tokens for OpenAI text-embedding-3 models
 const DEFAULT_MAX_TOKENS = 8191;
+
+/**
+ * Per-request caps for the embeddings endpoint. OpenAI rejects a request with
+ * more than 2048 inputs or more than 300,000 summed tokens (HTTP 400). The
+ * token budget is an *estimate* budget (see countTokens), kept at a third of
+ * the hard cap so an undercount of 2-3x on symbol-heavy text still fits.
+ * See docs/openai-request-cap-spec.md.
+ */
+export const MAX_INPUTS_PER_REQUEST = 2048;
+export const MAX_ESTIMATED_TOKENS_PER_REQUEST = 100_000;
 
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     private openaiClient: OpenAIClient;
@@ -135,28 +147,69 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         if (!this.modelId) {
             throw new Error("OpenAI model not loaded");
         }
+        if (texts.length === 0) {
+            return [];
+        }
 
         this.modelBusy$.next(true);
         try {
-            const result = await this.openaiClient.embedTexts(this.modelId, texts);
-            // Clear error state on success
-            this.modelError$.next(null);
-
-            // Track usage if available
-            if (result.usage && this.usageTracker) {
-                await this.usageTracker.trackUsage(
-                    result.usage.prompt_tokens,
-                    result.usage.total_tokens
+            const requests = await this.planRequests(texts);
+            if (requests.length > 1) {
+                log.info(
+                    `[OpenAI] Splitting ${texts.length} inputs into ${requests.length} requests`
                 );
             }
 
-            return result.embeddings;
+            const embeddings: number[][] = [];
+
+            // Sequential on purpose: peak payload is one request, and a failure
+            // stops before further requests are spent. Usage is recorded per
+            // request, so a request that succeeded before a later one failed
+            // is still counted.
+            for (const batch of requests) {
+                const result = await this.openaiClient.embedTexts(this.modelId, batch);
+                embeddings.push(...result.embeddings);
+                if (result.usage && this.usageTracker) {
+                    await this.usageTracker.trackUsage(
+                        result.usage.prompt_tokens,
+                        result.usage.total_tokens
+                    );
+                }
+            }
+
+            // Clear error state on success
+            this.modelError$.next(null);
+
+            return embeddings;
         } catch (error) {
             log.error("Failed to embed texts with OpenAI:", error);
             throw error;
         } finally {
             this.modelBusy$.next(false);
         }
+    }
+
+    /**
+     * Group `texts` into request-sized batches under both per-request caps.
+     * A single input above the per-request budget can never be sent and is
+     * refused here, before anything goes out, with a message naming it. An
+     * input above the model's own `maxTokens` is still sent as before: the
+     * estimate is rough, and an OpenAI-compatible server may truncate or
+     * accept it (chunk 0 carries the title and can exceed a small custom
+     * limit by a few tokens).
+     */
+    private async planRequests(texts: string[]): Promise<string[][]> {
+        const costs = await Promise.all(texts.map((t) => this.countTokens(t)));
+        const over = costs.findIndex((c) => c > MAX_ESTIMATED_TOKENS_PER_REQUEST);
+        if (over !== -1) {
+            throw new Error(
+                `Input ${over + 1} of ${texts.length} is ~${costs[over]} tokens, above the ${MAX_ESTIMATED_TOKENS_PER_REQUEST}-token request limit; nothing was sent`
+            );
+        }
+        return splitByBudget(texts, costs, {
+            maxItems: MAX_INPUTS_PER_REQUEST,
+            maxCost: MAX_ESTIMATED_TOKENS_PER_REQUEST,
+        });
     }
 
     async countTokens(text: string): Promise<number> {
