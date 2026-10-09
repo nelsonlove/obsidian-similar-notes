@@ -435,7 +435,7 @@ export class OramaWorker {
         }
         const generation = this.contentGeneration.get(path) ?? 0;
         const epoch = this.contentEpoch;
-        // Declared before the IIFE so its own finally can compare against it.
+        // eslint-disable-next-line prefer-const -- assigned once; declared first so its own finally can compare against it
         let load!: Promise<Map<number, string>>;
         load = (async () => {
             try {
