@@ -19,7 +19,7 @@ import {
     type TransformersConfig,
 } from "./TransformersEmbeddingProvider";
 
-/** Resolves the OpenAI API key from Obsidian's secret storage by secret ID. */
+/** Resolves a provider API key from Obsidian's secret storage by secret ID. */
 export interface ApiKeyResolver {
     getApiKey(secretId: string | undefined): string | null;
 }
@@ -136,8 +136,17 @@ export class EmbeddingService {
             await this.loadModel(settings.openaiModel || "text-embedding-3-small", openaiConfig);
         } else if (newProviderType === "gemini") {
             log.info("Switching to Gemini embedding provider");
+            // Same as OpenAI: key value and secret ID resolved live per request.
+            const geminiResolver = this.apiKeyResolver;
+            const geminiSettings = this.settingsService;
             const geminiConfig: GeminiConfig = {
-                apiKey: settings.geminiApiKey,
+                apiKey: geminiResolver
+                    ? () =>
+                        geminiResolver.getApiKey(
+                            geminiSettings?.get().geminiApiKeySecretId ??
+                                  settings.geminiApiKeySecretId
+                        ) ?? undefined
+                    : undefined,
                 model: settings.geminiModel || "gemini-embedding-001",
                 settingsService: this.settingsService,
             };

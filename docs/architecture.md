@@ -76,7 +76,7 @@ src/
 
 9. **Frontmatter-based file exclusion**: Notes can opt out of indexing from inside the note via frontmatter rules (`key` / `key: value`, matched against the parsed `metadataCache` frontmatter, never raw YAML). The authoritative check runs at processing time in `NoteIndexingService` (metadataCache lags vault events), with `NoteChangeQueue.analyzeSyncNeeds` also applying it during bulk sync. See `docs/frontmatter-exclusion-spec.md`.
 
-10. **Settings Storage**: Plugin settings are stored in Obsidian's data.json — except the OpenAI API key, which lives in Obsidian's secret storage (item 14). UI for settings uses React components.
+10. **Settings Storage**: Plugin settings are stored in Obsidian's data.json — except the provider API keys, which live in Obsidian's secret storage (item 14). UI for settings uses React components.
 
    - **Sectioning**: The settings tab is divided into top-level sections using Obsidian's `SettingGroup` (`@since 1.11.0`) — one per area (e.g. Model, Index, Exclude files from index, Exclude content from index, Display, Debug & Support). Each section is built by a `*SettingsSection` class (e.g. `IndexSettingsSection`) that returns `SettingBuilder` arrays.
    - **Use sibling groups, not sub-headings.** `SettingGroup` cannot nest, and inserting `Setting.setHeading()` divider rows *inside* a group renders poorly (tried more than once and reverted). To break a crowded section into sub-areas, add another sibling top-level `SettingGroup` instead of nesting or in-group headings.
@@ -89,4 +89,4 @@ src/
 
 13. **Slim Orama index**: the in-memory Orama index holds `IndexDocument`s (`src/adapter/orama/indexDocument.ts`): no chunk text, and one Float32Array per chunk shared between the document store and the vector index (a post-insert plugin plus a `getDocumentProperties` override that hands typed arrays through). Chunk text stays in IndexedDB and is read back for the hits only. See `docs/orama-index-memory-spec.md`.
 
-14. **OpenAI API key in secret storage**: the key lives in `app.secretStorage` (Obsidian 1.11.4+) and settings hold only its secret ID; `OpenAIApiKeyStore` is the single read/write path and moves a legacy `data.json` key over once on load. No fallback to `data.json`. See `docs/openai-api-key-secret-storage-spec.md`.
+14. **Provider API keys in secret storage**: the OpenAI and Gemini keys live in `app.secretStorage` (Obsidian 1.11.4+) and settings hold only their secret IDs; `ApiKeyStore` is the single read/write path and moves legacy `data.json` keys over once on load. No fallback to `data.json`. See `docs/openai-api-key-secret-storage-spec.md`.

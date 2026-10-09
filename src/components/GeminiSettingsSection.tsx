@@ -1,19 +1,23 @@
 import { GeminiClient } from "@/adapter/gemini";
 import type { SimilarNotesSettings } from "@/application/SettingsService";
-import { Notice } from "obsidian";
-import type { Setting } from "obsidian";
+import { ApiKeyStore } from "@/infrastructure/ApiKeyStore";
+import { Notice, SecretComponent } from "obsidian";
+import type { App, Setting } from "obsidian";
+import { SECRET_STORAGE_UNAVAILABLE_MESSAGE } from "./OpenAISettingsSection";
 
 export type SettingBuilder = (setting: Setting) => void;
 
 interface GeminiSettingsSectionProps {
+    app: App;
     settings: SimilarNotesSettings;
-    tempGeminiApiKey: string | undefined;
+    /** ID of the secret in Obsidian's secret storage, never the key itself. */
+    tempGeminiApiKeySecretId: string | undefined;
     tempGeminiModel: string | undefined;
-    onGeminiApiKeyChange: (value: string) => void;
+    onGeminiApiKeySecretIdChange: (value: string) => void;
     onGeminiModelChange: (value: string) => void;
     onRender: () => void;
     // Getter functions to get latest temp values (to avoid closure issues)
-    getTempValues?: () => { apiKey?: string; model?: string };
+    getTempValues?: () => { apiKeySecretId?: string; model?: string };
 }
 
 // Predefined Gemini embedding models
@@ -23,33 +27,38 @@ const GEMINI_MODELS = [
 
 export function getGeminiSettingBuilders(props: GeminiSettingsSectionProps): SettingBuilder[] {
     const {
+        app,
         settings,
-        tempGeminiApiKey,
+        tempGeminiApiKeySecretId,
         tempGeminiModel,
-        onGeminiApiKeyChange,
+        onGeminiApiKeySecretIdChange,
         onGeminiModelChange,
         onRender,
         getTempValues,
     } = props;
 
-    const geminiApiKey = tempGeminiApiKey ?? settings.geminiApiKey ?? "";
+    const keyStore = ApiKeyStore.fromApp(app);
+    const geminiApiKeySecretId =
+        tempGeminiApiKeySecretId ?? settings.geminiApiKeySecretId ?? "";
     const geminiModel = tempGeminiModel ?? settings.geminiModel ?? "gemini-embedding-001";
     const isCustomModel = !GEMINI_MODELS.some((m) => m.id === geminiModel);
 
     const builders: SettingBuilder[] = [
-        // API Key
+        // API key: picked from Obsidian's secret storage; the key value never
+        // touches data.json, only the secret's ID is saved. No fallback.
         (setting) => {
-            setting
-                .setName("API Key")
-                .setDesc("Your Google AI Studio API key (get it from aistudio.google.com)")
-                .addText((text) => {
-                    text.setPlaceholder("AIza...")
-                        .setValue(geminiApiKey)
-                        .onChange((value) => {
-                            onGeminiApiKeyChange(value);
-                        });
-                    // Make it a password field
-                    text.inputEl.type = "password";
+            setting.setName("API key");
+            if (!keyStore.isAvailable()) {
+                setting.setDesc(SECRET_STORAGE_UNAVAILABLE_MESSAGE);
+                return;
+            }
+            setting.setDesc(
+                "Pick the secret that holds your Google AI Studio API key (get one from aistudio.google.com; add it under Settings → General → Secrets)."
+            );
+            new SecretComponent(app, setting.controlEl)
+                .setValue(geminiApiKeySecretId)
+                .onChange((value) => {
+                    onGeminiApiKeySecretIdChange(value);
                 });
         },
         // Model dropdown
@@ -106,11 +115,12 @@ export function getGeminiSettingBuilders(props: GeminiSettingsSectionProps): Set
                 button.setButtonText("Test").onClick(async () => {
                     // Use getter function to get latest temp values (avoids closure issues)
                     const tempValues = getTempValues?.() ?? {};
-                    const apiKey = tempValues.apiKey ?? settings.geminiApiKey;
+                    const secretId = tempValues.apiKeySecretId ?? settings.geminiApiKeySecretId;
+                    const apiKey = () => keyStore.getApiKey(secretId) ?? undefined;
                     const model = tempValues.model ?? settings.geminiModel ?? "gemini-embedding-001";
 
-                    if (!apiKey) {
-                        new Notice("Please enter an API key first");
+                    if (!apiKey()) {
+                        new Notice("Please pick a secret that holds an API key first");
                         return;
                     }
 

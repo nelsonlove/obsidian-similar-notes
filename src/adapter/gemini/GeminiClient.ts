@@ -1,3 +1,4 @@
+import type { ApiKeySource } from "@/adapter/openai";
 import log from "loglevel";
 import { requestUrl } from "obsidian";
 
@@ -52,11 +53,17 @@ const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
 export class GeminiClient {
     private baseUrl: string;
-    private apiKey?: string;
+    private apiKeySource: ApiKeySource;
 
-    constructor(apiKey?: string, baseUrl: string = DEFAULT_BASE_URL) {
+    /** `apiKey` may be a function resolved on every request (see ApiKeySource). */
+    constructor(apiKey?: ApiKeySource, baseUrl: string = DEFAULT_BASE_URL) {
         this.baseUrl = this.normalizeUrl(baseUrl);
-        this.apiKey = apiKey;
+        this.apiKeySource = apiKey;
+    }
+
+    private resolveApiKey(): string | undefined {
+        const source = this.apiKeySource;
+        return typeof source === "function" ? source() || undefined : source;
     }
 
     /**
@@ -74,8 +81,9 @@ export class GeminiClient {
             "Content-Type": "application/json",
         };
 
-        if (this.apiKey) {
-            headers["x-goog-api-key"] = this.apiKey;
+        const apiKey = this.resolveApiKey();
+        if (apiKey) {
+            headers["x-goog-api-key"] = apiKey;
         }
 
         return headers;
@@ -246,14 +254,14 @@ export class GeminiClient {
     /**
      * Update the API key
      */
-    setApiKey(apiKey: string | undefined): void {
-        this.apiKey = apiKey;
+    setApiKey(apiKey: ApiKeySource): void {
+        this.apiKeySource = apiKey;
     }
 
     /**
      * Check if API key is set
      */
     hasApiKey(): boolean {
-        return !!this.apiKey;
+        return !!this.resolveApiKey();
     }
 }

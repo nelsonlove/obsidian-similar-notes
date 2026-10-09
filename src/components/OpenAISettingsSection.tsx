@@ -1,6 +1,6 @@
 import { OpenAIClient } from "@/adapter/openai";
 import type { SimilarNotesSettings } from "@/application/SettingsService";
-import { OpenAIApiKeyStore } from "@/infrastructure/OpenAIApiKeyStore";
+import { ApiKeyStore } from "@/infrastructure/ApiKeyStore";
 import { Notice, SecretComponent } from "obsidian";
 import type { App, Setting } from "obsidian";
 
@@ -56,7 +56,7 @@ export function getOpenAISettingBuilders(props: OpenAISettingsSectionProps): Set
         getTempValues,
     } = props;
 
-    const keyStore = OpenAIApiKeyStore.fromApp(app);
+    const keyStore = ApiKeyStore.fromApp(app);
     const openaiUrl = tempOpenaiUrl ?? settings.openaiUrl ?? DEFAULT_OPENAI_URL;
     const openaiApiKeySecretId =
         tempOpenaiApiKeySecretId ?? settings.openaiApiKeySecretId ?? "";

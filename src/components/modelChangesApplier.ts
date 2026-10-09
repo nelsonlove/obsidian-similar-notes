@@ -1,5 +1,5 @@
 import type { SimilarNotesSettings, SettingsService } from "@/application/SettingsService";
-import { OpenAIApiKeyStore } from "@/infrastructure/OpenAIApiKeyStore";
+import { ApiKeyStore } from "@/infrastructure/ApiKeyStore";
 import { Notice } from "obsidian";
 import type { App } from "obsidian";
 import { SECRET_STORAGE_UNAVAILABLE_MESSAGE } from "./OpenAISettingsSection";
@@ -21,7 +21,7 @@ export interface ModelChangesApplierParams {
     tempOpenaiApiKeySecretId?: string;
     tempOpenaiModel?: string;
     tempOpenaiMaxTokens?: number;
-    tempGeminiApiKey?: string;
+    tempGeminiApiKeySecretId?: string;
     tempGeminiModel?: string;
     onComplete: () => void;
 }
@@ -44,7 +44,7 @@ export async function applyModelChanges(params: ModelChangesApplierParams): Prom
         tempOpenaiApiKeySecretId,
         tempOpenaiModel,
         tempOpenaiMaxTokens,
-        tempGeminiApiKey,
+        tempGeminiApiKeySecretId,
         tempGeminiModel,
         onComplete,
     } = params;
@@ -91,7 +91,7 @@ export async function applyModelChanges(params: ModelChangesApplierParams): Prom
                 // Only the secret ID is saved, and only when secret storage
                 // exists; the key itself never goes into data.json.
                 const secretId = tempOpenaiApiKeySecretId ?? settings.openaiApiKeySecretId;
-                if (secretId && !OpenAIApiKeyStore.fromApp(app).isAvailable()) {
+                if (secretId && !ApiKeyStore.fromApp(app).isAvailable()) {
                     new Notice(`Similar Notes: ${SECRET_STORAGE_UNAVAILABLE_MESSAGE}`);
                 } else {
                     updateData.openaiApiKeySecretId = secretId;
@@ -99,7 +99,13 @@ export async function applyModelChanges(params: ModelChangesApplierParams): Prom
                 updateData.openaiModel = tempOpenaiModel ?? "text-embedding-3-small";
                 updateData.openaiMaxTokens = tempOpenaiMaxTokens ?? settings.openaiMaxTokens;
             } else if (provider === "gemini") {
-                updateData.geminiApiKey = tempGeminiApiKey ?? settings.geminiApiKey;
+                // Same rule as OpenAI: only the secret ID is saved, never a key.
+                const geminiSecretId = tempGeminiApiKeySecretId ?? settings.geminiApiKeySecretId;
+                if (geminiSecretId && !ApiKeyStore.fromApp(app).isAvailable()) {
+                    new Notice(`Similar Notes: ${SECRET_STORAGE_UNAVAILABLE_MESSAGE}`);
+                } else {
+                    updateData.geminiApiKeySecretId = geminiSecretId;
+                }
                 updateData.geminiModel = tempGeminiModel ?? "gemini-embedding-001";
             }
 

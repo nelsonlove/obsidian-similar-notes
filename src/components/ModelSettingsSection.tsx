@@ -43,7 +43,7 @@ export class ModelSettingsSection {
     private tempOpenaiApiKeySecretId?: string;
     private tempOpenaiModel?: string;
     private tempOpenaiMaxTokens?: number;
-    private tempGeminiApiKey?: string;
+    private tempGeminiApiKeySecretId?: string;
     private tempGeminiModel?: string;
 
     // Apply button reference for direct updates
@@ -169,7 +169,8 @@ export class ModelSettingsSection {
             this.tempOpenaiApiKeySecretId ?? settings.openaiApiKeySecretId;
         this.tempOpenaiModel = this.tempOpenaiModel ?? settings.openaiModel;
         this.tempOpenaiMaxTokens = this.tempOpenaiMaxTokens ?? settings.openaiMaxTokens;
-        this.tempGeminiApiKey = this.tempGeminiApiKey ?? settings.geminiApiKey;
+        this.tempGeminiApiKeySecretId =
+            this.tempGeminiApiKeySecretId ?? settings.geminiApiKeySecretId;
         this.tempGeminiModel = this.tempGeminiModel ?? settings.geminiModel;
 
         const sectionContainer = this.sectionContainer;
@@ -319,18 +320,19 @@ export class ModelSettingsSection {
             });
         } else if (this.tempModelProvider === "gemini") {
             return getGeminiSettingBuilders({
+                app: this.props.app,
                 settings,
-                tempGeminiApiKey: this.tempGeminiApiKey,
+                tempGeminiApiKeySecretId: this.tempGeminiApiKeySecretId,
                 tempGeminiModel: this.tempGeminiModel,
-                onGeminiApiKeyChange: (value: string) => {
-                    this.tempGeminiApiKey = value;
+                onGeminiApiKeySecretIdChange: (value: string) => {
+                    this.tempGeminiApiKeySecretId = value;
                 },
                 onGeminiModelChange: (value: string) => {
                     this.tempGeminiModel = value;
                 },
                 onRender: () => this.render(),
                 getTempValues: () => ({
-                    apiKey: this.tempGeminiApiKey,
+                    apiKeySecretId: this.tempGeminiApiKeySecretId,
                     model: this.tempGeminiModel,
                 }),
             });
@@ -359,7 +361,7 @@ export class ModelSettingsSection {
                     tempOpenaiApiKeySecretId: this.tempOpenaiApiKeySecretId,
                     tempOpenaiModel: this.tempOpenaiModel,
                     tempOpenaiMaxTokens: this.tempOpenaiMaxTokens,
-                    tempGeminiApiKey: this.tempGeminiApiKey,
+                    tempGeminiApiKeySecretId: this.tempGeminiApiKeySecretId,
                     tempGeminiModel: this.tempGeminiModel,
                     onComplete: () => {
                         this.clearTempState();
@@ -391,7 +393,7 @@ export class ModelSettingsSection {
                     this.tempOpenaiModel !== settings.openaiModel ||
                     this.tempOpenaiMaxTokens !== settings.openaiMaxTokens)) ||
             (this.tempModelProvider === "gemini" &&
-                (this.tempGeminiApiKey !== settings.geminiApiKey ||
+                (this.tempGeminiApiKeySecretId !== settings.geminiApiKeySecretId ||
                     this.tempGeminiModel !== settings.geminiModel))
         );
     }
@@ -407,7 +409,7 @@ export class ModelSettingsSection {
         this.tempOpenaiApiKeySecretId = undefined;
         this.tempOpenaiModel = undefined;
         this.tempOpenaiMaxTokens = undefined;
-        this.tempGeminiApiKey = undefined;
+        this.tempGeminiApiKeySecretId = undefined;
         this.tempGeminiModel = undefined;
     }
 
