@@ -1,5 +1,6 @@
 import { OpenAIClient, UsageTracker } from "@/adapter/openai";
 import type { SettingsService } from "@/application/SettingsService";
+import { splitByBudget } from "@/utils/batching";
 import { handleEmbeddingLoadError } from "@/utils/errorHandling";
 import log from "loglevel";
 import { type Observable, Subject } from "rxjs";
@@ -15,6 +16,16 @@ export interface OpenAIConfig {
 
 // Default max tokens for OpenAI text-embedding-3 models
 const DEFAULT_MAX_TOKENS = 8191;
+
+/**
+ * Per-request caps for the embeddings endpoint. OpenAI rejects a request with
+ * more than 2048 inputs or more than 300,000 summed tokens (HTTP 400). The
+ * token budget is an *estimate* budget (see countTokens), kept at a third of
+ * the hard cap so an undercount of 2-3x on symbol-heavy text still fits.
+ * See docs/openai-request-cap-spec.md.
+ */
+export const MAX_INPUTS_PER_REQUEST = 2048;
+export const MAX_ESTIMATED_TOKENS_PER_REQUEST = 100_000;
 
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     private openaiClient: OpenAIClient;
@@ -135,28 +146,71 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         if (!this.modelId) {
             throw new Error("OpenAI model not loaded");
         }
+        if (texts.length === 0) {
+            return [];
+        }
 
         this.modelBusy$.next(true);
         try {
-            const result = await this.openaiClient.embedTexts(this.modelId, texts);
+            const requests = await this.planRequests(texts);
+            if (requests.length > 1) {
+                log.info(
+                    `[OpenAI] Splitting ${texts.length} inputs into ${requests.length} requests`
+                );
+            }
+
+            const embeddings: number[][] = [];
+            let promptTokens = 0;
+            let totalTokens = 0;
+            let sawUsage = false;
+
+            // Sequential on purpose: peak payload is one request, and a failure
+            // stops before further requests are spent.
+            for (const batch of requests) {
+                const result = await this.openaiClient.embedTexts(this.modelId, batch);
+                embeddings.push(...result.embeddings);
+                if (result.usage) {
+                    sawUsage = true;
+                    promptTokens += result.usage.prompt_tokens;
+                    totalTokens += result.usage.total_tokens;
+                }
+            }
+
             // Clear error state on success
             this.modelError$.next(null);
 
             // Track usage if available
-            if (result.usage && this.usageTracker) {
-                await this.usageTracker.trackUsage(
-                    result.usage.prompt_tokens,
-                    result.usage.total_tokens
-                );
+            if (sawUsage && this.usageTracker) {
+                await this.usageTracker.trackUsage(promptTokens, totalTokens);
             }
 
-            return result.embeddings;
+            return embeddings;
         } catch (error) {
             log.error("Failed to embed texts with OpenAI:", error);
             throw error;
         } finally {
             this.modelBusy$.next(false);
         }
+    }
+
+    /**
+     * Group `texts` into request-sized batches under both per-request caps.
+     * A single input above the model's input limit is refused here, before
+     * anything is sent, with a message naming it.
+     */
+    private async planRequests(texts: string[]): Promise<string[][]> {
+        const costs = await Promise.all(texts.map((t) => this.countTokens(t)));
+        const perInputLimit = Math.min(this.maxTokens, MAX_ESTIMATED_TOKENS_PER_REQUEST);
+        const over = costs.findIndex((c) => c > perInputLimit);
+        if (over !== -1) {
+            throw new Error(
+                `Input ${over + 1} of ${texts.length} is ~${costs[over]} tokens, above the ${perInputLimit}-token input limit; nothing was sent`
+            );
+        }
+        return splitByBudget(texts, costs, {
+            maxItems: MAX_INPUTS_PER_REQUEST,
+            maxCost: MAX_ESTIMATED_TOKENS_PER_REQUEST,
+        });
     }
 
     async countTokens(text: string): Promise<number> {
