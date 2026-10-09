@@ -15,17 +15,16 @@ import {
     search,
 } from "@orama/orama";
 import log from "loglevel";
+import {
+    createIndexDocumentPropertiesGetter,
+    createIndexSchema,
+    createSlimIndexPlugin,
+    type IndexDocument,
+    type IndexSchema,
+    toIndexDocument,
+} from "./indexDocument";
 
-type Schema = {
-    path: "string";
-    pathHash: "string";
-    title: "string";
-    embedding: `vector[${number}]`;
-    lastUpdated: "number";
-    content: "string";
-    chunkIndex: "number";
-    totalChunks: "number";
-};
+type Schema = IndexSchema;
 type Doc = TypedDocument<Orama<Schema>>;
 
 export class OramaWorker {
@@ -46,16 +45,7 @@ export class OramaWorker {
     ): Promise<void> {
         this.vectorSize = vectorSize;
         this.db = null;
-        this.schema = {
-            path: "string",
-            pathHash: "string",
-            title: "string",
-            embedding: `vector[${this.vectorSize}]`,
-            lastUpdated: "number",
-            content: "string",
-            chunkIndex: "number",
-            totalChunks: "number",
-        } as const;
+        this.schema = createIndexSchema(vectorSize);
 
         try {
             // Initialize IndexedDB storage with vault-specific ID
@@ -68,10 +58,15 @@ export class OramaWorker {
                 log.info("Cleared IndexedDB for reindexing");
             }
 
-            // Create empty Orama database
-            this.db = await create({
+            // Create empty Orama database. The index holds slim documents
+            // (no chunk text, one Float32Array per chunk) — see indexDocument.ts.
+            this.db = (await create({
                 schema: this.schema,
-            });
+                components: {
+                    getDocumentProperties: createIndexDocumentPropertiesGetter() as never,
+                },
+                plugins: [createSlimIndexPlugin()],
+            })) as Orama<Schema>;
 
             if (loadExistingData) {
                 // Load data from IndexedDB in batches
@@ -81,7 +76,7 @@ export class OramaWorker {
                     100,
                     async (batch) => {
                         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                        await insertMultiple(this.db!, batch as Doc[]);
+                        await insertMultiple(this.db!, this.toDocs(batch));
                     },
                     (processed, total) => {
                         loadedCount = processed;
@@ -124,8 +119,8 @@ export class OramaWorker {
             lastUpdated: Date.now(),
         };
 
-        // Insert to both Orama (in-memory) and IndexedDB (persistent)
-        await insert(this.db, internalNoteChunk as Doc);
+        // Insert to both Orama (in-memory, slim) and IndexedDB (persistent, full)
+        await insert(this.db, this.toDoc(internalNoteChunk));
         await this.storage.put(internalNoteChunk);
     }
 
@@ -156,9 +151,18 @@ export class OramaWorker {
             }))
         );
 
-        // Insert to both Orama (in-memory) and IndexedDB (persistent)
-        await insertMultiple(this.db, internalChunks as Doc[]);
+        // Insert to both Orama (in-memory, slim) and IndexedDB (persistent, full)
+        await insertMultiple(this.db, this.toDocs(internalChunks));
         await this.storage.putMulti(internalChunks);
+    }
+
+    /** Slim in-memory shape of a stored chunk (see indexDocument.ts). */
+    private toDoc(chunk: NoteChunkInternal): Doc {
+        return toIndexDocument(chunk) as unknown as Doc;
+    }
+
+    private toDocs(chunks: NoteChunkInternal[]): Doc[] {
+        return chunks.map((chunk) => this.toDoc(chunk));
     }
 
     /**
@@ -250,7 +254,7 @@ export class OramaWorker {
         // the renamed copies back. Embeddings are preserved as-is, so the
         // search results for the moved note are unchanged.
         await this.removeByPath(oldPath);
-        await insertMultiple(this.db, renamed as Doc[]);
+        await insertMultiple(this.db, this.toDocs(renamed));
         await this.storage.putMulti(renamed);
 
         return true;
@@ -287,7 +291,7 @@ export class OramaWorker {
 
         const batchSize = limit * 2;
         let offset = 0;
-        let allResults: { chunk: NoteChunkDTO; score: number }[] = [];
+        let hits: { doc: IndexDocument; score: number }[] = [];
 
         // eslint-disable-next-line no-constant-condition
         while (true) {
@@ -317,28 +321,16 @@ export class OramaWorker {
                 return true;
             });
 
-            // Add filtered results to our collection
-            allResults = allResults.concat(
-                filteredHits.map((hit) => {
-                    const doc = hit.document as unknown as Doc;
-                    const dto: NoteChunkDTO = {
-                        path: doc.path,
-                        title: doc.title,
-                        content: doc.content,
-                        chunkIndex: doc.chunkIndex,
-                        totalChunks: doc.totalChunks,
-                        embedding: doc.embedding as unknown as number[],
-                    };
-                    return {
-                        chunk: dto,
-                        score: hit.score,
-                    };
-                })
+            hits = hits.concat(
+                filteredHits.map((hit) => ({
+                    doc: hit.document as unknown as IndexDocument,
+                    score: hit.score,
+                }))
             );
 
             // If we have enough results, break the loop
-            if (allResults.length >= limit) {
-                allResults = allResults.slice(0, limit);
+            if (hits.length >= limit) {
+                hits = hits.slice(0, limit);
                 break;
             }
 
@@ -346,7 +338,43 @@ export class OramaWorker {
             offset += batchSize;
         }
 
-        return allResults;
+        // The index holds no chunk text; read it back from IndexedDB for the
+        // hits only (one read per distinct note path).
+        const contentByPath = await this.loadContent(
+            Array.from(new Set(hits.map((hit) => hit.doc.path)))
+        );
+
+        // Orama's vector search nulls the vector field on returned hits, so a
+        // hit never carries its embedding (it never did); callers that need
+        // embeddings use getByPath, which reads IndexedDB.
+        return hits.map(({ doc, score }) => ({
+            chunk: {
+                path: doc.path,
+                title: doc.title,
+                content: contentByPath.get(doc.path)?.get(doc.chunkIndex) ?? "",
+                chunkIndex: doc.chunkIndex,
+                totalChunks: doc.totalChunks,
+                embedding: [],
+            },
+            score,
+        }));
+    }
+
+    /** chunk text per note path, keyed by chunk index. */
+    private async loadContent(
+        paths: string[]
+    ): Promise<Map<string, Map<number, string>>> {
+        const result = new Map<string, Map<number, string>>();
+        await Promise.all(
+            paths.map(async (path) => {
+                const byIndex = new Map<number, string>();
+                for (const chunk of await this.storage.getByPath(path)) {
+                    byIndex.set(chunk.chunkIndex, chunk.content);
+                }
+                result.set(path, byIndex);
+            })
+        );
+        return result;
     }
 
     count(): number {
