@@ -97,27 +97,43 @@ describe("OpenAIEmbeddingProvider.embedTexts: one request per budget, never one 
         expect(sent).toBe(300);
     });
 
-    test("refuses a single input above the model's input limit before sending anything", async () => {
-        const provider = await loadedProvider(100);
+    test("refuses a single input above the per-request budget before sending anything", async () => {
+        const provider = await loadedProvider();
         embedTexts.mockImplementation(echoBatch({ value: 0 }));
+        const huge = "y".repeat((MAX_ESTIMATED_TOKENS_PER_REQUEST + 1) * 4);
 
-        await expect(
-            provider.embedTexts(["fine", "y".repeat(401), "fine"])
-        ).rejects.toThrow(/Input 2 of 3 is ~101 tokens, above the 100-token input limit; nothing was sent/);
+        await expect(provider.embedTexts(["fine", huge, "fine"])).rejects.toThrow(
+            new RegExp(`Input 2 of 3 is ~${MAX_ESTIMATED_TOKENS_PER_REQUEST + 1} tokens, above the ${MAX_ESTIMATED_TOKENS_PER_REQUEST}-token request limit; nothing was sent`)
+        );
         expect(embedTexts).not.toHaveBeenCalled();
     });
 
-    test("sums usage across the requests of one note", async () => {
-        const provider = await loadedProvider();
+    test("an input above the model's own maxTokens is still sent (the server decides)", async () => {
+        const provider = await loadedProvider(100);
         embedTexts.mockImplementation(echoBatch({ value: 0 }));
+
+        await provider.embedTexts(["fine", "y".repeat(401)]);
+
+        expect(embedTexts).toHaveBeenCalledTimes(1);
+        expect(embedTexts.mock.calls[0][1]).toHaveLength(2);
+    });
+
+    test("records usage per request, so a request that succeeded before a failure still counts", async () => {
+        const provider = await loadedProvider();
+        embedTexts
+            .mockImplementationOnce(echoBatch({ value: 0 }))
+            .mockRejectedValueOnce(new Error("Failed to generate embeddings: 429"));
         const tracker = (provider as unknown as { usageTracker: { trackUsage: ReturnType<typeof vi.fn> } | null });
         tracker.usageTracker = { trackUsage: vi.fn() };
         const texts = Array.from({ length: MAX_INPUTS_PER_REQUEST + 1 }, (_, i) => `t${i}`);
 
-        await provider.embedTexts(texts);
+        await expect(provider.embedTexts(texts)).rejects.toThrow(/429/);
 
         expect(tracker.usageTracker.trackUsage).toHaveBeenCalledTimes(1);
-        expect(tracker.usageTracker.trackUsage).toHaveBeenCalledWith(texts.length * 10, texts.length * 10);
+        expect(tracker.usageTracker.trackUsage).toHaveBeenCalledWith(
+            MAX_INPUTS_PER_REQUEST * 10,
+            MAX_INPUTS_PER_REQUEST * 10
+        );
     });
 
     test("stops at the first failed request and propagates the error", async () => {

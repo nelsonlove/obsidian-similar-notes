@@ -36,13 +36,25 @@ export interface OpenAIBatchEmbeddingResult {
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
+/**
+ * The API key as a value, or as a function resolved on every request so a
+ * key kept in Obsidian's secret storage is read live (a rotated secret takes
+ * effect on the next request, with no reload).
+ */
+export type ApiKeySource = string | (() => string | undefined) | undefined;
+
 export class OpenAIClient {
     private baseUrl: string;
-    private apiKey?: string;
+    private apiKeySource: ApiKeySource;
 
-    constructor(baseUrl: string = DEFAULT_BASE_URL, apiKey?: string) {
+    constructor(baseUrl: string = DEFAULT_BASE_URL, apiKey?: ApiKeySource) {
         this.baseUrl = this.normalizeUrl(baseUrl);
-        this.apiKey = apiKey;
+        this.apiKeySource = apiKey;
+    }
+
+    private resolveApiKey(): string | undefined {
+        const source = this.apiKeySource;
+        return typeof source === "function" ? source() || undefined : source;
     }
 
     /**
@@ -60,8 +72,9 @@ export class OpenAIClient {
             "Content-Type": "application/json",
         };
 
-        if (this.apiKey) {
-            headers["Authorization"] = `Bearer ${this.apiKey}`;
+        const apiKey = this.resolveApiKey();
+        if (apiKey) {
+            headers["Authorization"] = `Bearer ${apiKey}`;
         }
 
         return headers;
@@ -195,14 +208,14 @@ export class OpenAIClient {
     /**
      * Update the API key
      */
-    setApiKey(apiKey: string | undefined): void {
-        this.apiKey = apiKey;
+    setApiKey(apiKey: ApiKeySource): void {
+        this.apiKeySource = apiKey;
     }
 
     /**
      * Check if API key is set
      */
     hasApiKey(): boolean {
-        return !!this.apiKey;
+        return !!this.resolveApiKey();
     }
 }

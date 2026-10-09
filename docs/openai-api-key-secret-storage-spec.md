@@ -9,7 +9,7 @@ The OpenAI API key was a plain string in `data.json`. That file sits inside the 
 Obsidian 1.11.4 added `app.secretStorage` (`setSecret`, `getSecret`, `listSecrets`) and `SecretComponent`, a picker for the secrets the user keeps under Settings → General → Secrets. The plugin uses both and nothing else:
 
 - **Settings hold a secret ID, never a key.** `SimilarNotesSettings.openaiApiKeySecretId` names the secret; `openaiApiKey` is a legacy field that is read once (below) and never written again.
-- **`OpenAIApiKeyStore`** (`src/infrastructure/OpenAIApiKeyStore.ts`) is the only path to the key: `getApiKey(secretId)` resolves it from secret storage at send time (`EmbeddingService` passes the store as `ApiKeyResolver`), `setApiKey` writes one, and `isAvailable()` says whether secret storage exists.
+- **`OpenAIApiKeyStore`** (`src/infrastructure/OpenAIApiKeyStore.ts`) is the only path to the key: `getApiKey(secretId)` resolves it from secret storage at send time: `EmbeddingService` hands the OpenAI client a function that calls the store on every request (`ApiKeySource`), so a secret whose value is rotated in Obsidian takes effect on the next request with no reload, `setApiKey` writes one, and `isAvailable()` says whether secret storage exists.
 - **One-time migration.** On load, `migrateLegacyKey` moves a key found in `data.json` into secret storage under `similar-notes-openai-api-key`, writes that ID into settings, and removes the plaintext field from `data.json` (the field is set to `undefined`, which the JSON serializer drops).
 - **Settings tab.** The API key row is a `SecretComponent`; there is no text box. The "Test connection" button resolves the key the same way.
 

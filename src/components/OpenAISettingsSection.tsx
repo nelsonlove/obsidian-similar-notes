@@ -166,10 +166,8 @@ export function getOpenAISettingBuilders(props: OpenAISettingsSectionProps): Set
                     // Use getter function to get latest temp values (avoids closure issues)
                     const tempValues = getTempValues?.() ?? {};
                     const url = tempValues.url ?? settings.openaiUrl ?? DEFAULT_OPENAI_URL;
-                    const apiKey =
-                        keyStore.getApiKey(
-                            tempValues.apiKeySecretId ?? settings.openaiApiKeySecretId
-                        ) ?? undefined;
+                    const secretId = tempValues.apiKeySecretId ?? settings.openaiApiKeySecretId;
+                    const apiKey = () => keyStore.getApiKey(secretId) ?? undefined;
                     const model = tempValues.model ?? settings.openaiModel ?? "text-embedding-3-small";
 
                     if (!model) {
@@ -180,7 +178,7 @@ export function getOpenAISettingBuilders(props: OpenAISettingsSectionProps): Set
                     new Notice(`Testing connection to ${url} with model ${model}...`);
 
                     try {
-                        const client = new OpenAIClient(url, apiKey || undefined);
+                        const client = new OpenAIClient(url, apiKey);
                         const success = await client.testConnection(model);
 
                         if (success) {
