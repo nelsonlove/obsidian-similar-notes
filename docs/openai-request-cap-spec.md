@@ -11,7 +11,7 @@
 1. Estimate the tokens of each input with the provider's `countTokens` (the chars/4 or chars/1 heuristic already used for chunk sizing).
 2. Refuse a single input whose estimate exceeds the per-request budget, with an error that names the input and says nothing was sent; such an input can never be sent. An input above the model's own `maxTokens` is still sent, as before this change: the estimate is rough, chunk 0 carries the note title on top of a full chunk, and an OpenAI-compatible server may truncate or accept it. The chunker caps chunks at 512 tokens, so the refusal only fires for a defective chunk.
 3. Split the inputs into consecutive batches with `splitByBudget` (`src/utils/batching.ts`): each batch holds at most `MAX_INPUTS_PER_REQUEST` (2048) inputs and at most `MAX_ESTIMATED_TOKENS_PER_REQUEST` (100,000) estimated tokens.
-4. Send the batches one after another, concatenate the embeddings in input order, and record each request's usage as it returns (so a request that succeeded before a later one failed is still counted; the indexer's retry re-sends the whole note, and that spend is counted too).
+4. Send the batches one after another, concatenate the embeddings in input order, and record each request's usage as it returns (so a request that succeeded before a later one failed is still counted; the indexer's retry re-sends the whole note, and that spend is counted too). The usage panel's request count therefore counts HTTP requests; before this change a note was always exactly one request, so the two numbers were the same.
 
 ## Why 100,000 and not 300,000
 

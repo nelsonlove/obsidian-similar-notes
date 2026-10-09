@@ -38,14 +38,20 @@ export class OramaWorker {
     private vectorSize: number;
     private storage: IndexedDBChunkStorage;
     /**
-     * Chunk text by note path, keyed by chunk index, for recent hits. The
-     * index holds no text, and SimilarNoteFinder queries once per chunk of
-     * the active note, so the same hit paths come up again and again; this
-     * keeps each path's text to one IndexedDB read per write to that path.
-     * Bounded by chunk count; invalidated on every write to the path.
+     * Chunk text by note path, keyed by chunk index, for recently loaded hit
+     * paths. The index holds no text, and SimilarNoteFinder queries once per
+     * chunk of the active note, so the same hit paths come up again and
+     * again; this keeps each path's text to one IndexedDB read per write to
+     * that path. Bounded by chunk count (oldest loaded path evicted first);
+     * invalidated on every write to the path, including a write that lands
+     * while a read for the path is in flight (see contentGeneration).
      */
     private contentCache = new Map<string, Map<number, string>>();
     private contentCacheChunks = 0;
+    /** In-flight reads by path, so concurrent misses share one read. */
+    private contentLoads = new Map<string, Promise<Map<number, string>>>();
+    /** Bumped on every write to a path; a read caches only if unchanged. */
+    private contentGeneration = new Map<string, number>();
 
     setLogLevel(level: log.LogLevelDesc): void {
         log.setLevel(level);
@@ -62,6 +68,8 @@ export class OramaWorker {
         this.schema = createIndexSchema(vectorSize);
         this.contentCache.clear();
         this.contentCacheChunks = 0;
+        this.contentLoads.clear();
+        this.contentGeneration.clear();
 
         try {
             // Initialize IndexedDB storage with vault-specific ID
@@ -242,8 +250,16 @@ export class OramaWorker {
             if (results.hits.length === 0) {
                 break;
             }
+            let removed = 0;
             for (const hit of results.hits) {
-                await remove(this.db, hit.id);
+                if (await remove(this.db, hit.id)) {
+                    removed++;
+                }
+            }
+            if (removed === 0) {
+                // A page that cannot be removed would loop forever; log and stop.
+                log.error(`removeByPath: ${results.hits.length} hits for ${path} could not be removed`);
+                break;
             }
         }
 
@@ -366,8 +382,8 @@ export class OramaWorker {
             offset += batchSize;
         }
 
-        // The index holds no chunk text; read it back from IndexedDB for the
-        // hits only (one read per distinct note path).
+        // The index holds no chunk text; resolve it for the hit paths from
+        // the per-path cache, reading IndexedDB on a miss.
         const contentByPath = await this.loadContent(
             Array.from(new Set(hits.map((hit) => hit.doc.path)))
         );
@@ -395,23 +411,45 @@ export class OramaWorker {
         const result = new Map<string, Map<number, string>>();
         await Promise.all(
             paths.map(async (path) => {
-                const cached = this.contentCache.get(path);
-                if (cached) {
-                    result.set(path, cached);
-                    return;
-                }
-                const byIndex = new Map<number, string>();
-                for (const chunk of await this.storage.getByPath(path)) {
-                    byIndex.set(chunk.chunkIndex, chunk.content);
-                }
-                result.set(path, byIndex);
-                this.cacheContent(path, byIndex);
+                result.set(path, await this.loadContentForPath(path));
             })
         );
         return result;
     }
 
+    private loadContentForPath(path: string): Promise<Map<number, string>> {
+        const cached = this.contentCache.get(path);
+        if (cached) {
+            return Promise.resolve(cached);
+        }
+        const inFlight = this.contentLoads.get(path);
+        if (inFlight) {
+            return inFlight;
+        }
+        const generation = this.contentGeneration.get(path) ?? 0;
+        const load = (async () => {
+            try {
+                const byIndex = new Map<number, string>();
+                for (const chunk of await this.storage.getByPath(path)) {
+                    byIndex.set(chunk.chunkIndex, chunk.content);
+                }
+                // A write to the path while the read was in flight bumped
+                // the generation; what was read may predate it, so do not
+                // cache it (the result is still returned for this query).
+                if ((this.contentGeneration.get(path) ?? 0) === generation) {
+                    this.cacheContent(path, byIndex);
+                }
+                return byIndex;
+            } finally {
+                this.contentLoads.delete(path);
+            }
+        })();
+        this.contentLoads.set(path, load);
+        return load;
+    }
+
     private dropCachedContent(path: string): void {
+        this.contentGeneration.set(path, (this.contentGeneration.get(path) ?? 0) + 1);
         const cached = this.contentCache.get(path);
         if (cached) {
             this.contentCacheChunks -= cached.size;
@@ -422,6 +460,12 @@ export class OramaWorker {
     private cacheContent(path: string, byIndex: Map<number, string>): void {
         if (byIndex.size > CONTENT_CACHE_MAX_CHUNKS) {
             return;
+        }
+        // Replace, never double-count, an entry already present for the path.
+        const existing = this.contentCache.get(path);
+        if (existing) {
+            this.contentCacheChunks -= existing.size;
+            this.contentCache.delete(path);
         }
         // Evict oldest paths (Map keeps insertion order) until this one fits.
         while (

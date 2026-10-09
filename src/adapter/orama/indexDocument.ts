@@ -5,8 +5,9 @@ import { type AnyOrama, type OramaPlugin, components } from "@orama/orama";
  * What the in-memory Orama index holds per chunk: what is needed to rank a hit
  * and identify its note, and nothing else.
  *
- * - `content` is NOT here. It lives only in IndexedDB and is read back for the
- *   handful of hits a search returns (`OramaWorker.findSimilarChunks`).
+ * - `content` is NOT here. It lives only in IndexedDB and is read back, per
+ *   hit path and cached, for the hits a search returns
+ *   (`OramaWorker.findSimilarChunks`).
  * - `embedding` goes in as the stored `number[]` (Orama's insert validation
  *   accepts only a plain array for a `vector[N]` field) and is compacted right
  *   after insertion by `createSlimIndexPlugin`: the document store then points

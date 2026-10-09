@@ -112,13 +112,20 @@ export class EmbeddingService {
             await this.loadModel(settings.ollamaModel || "", ollamaConfig);
         } else if (newProviderType === "openai") {
             log.info("Switching to OpenAI embedding provider");
-            // The key is read from secret storage only, on every request, so a
-            // rotated secret takes effect without a reload; data.json never holds it.
+            // The key is read from secret storage only, on every request, and
+            // the secret ID from the live settings, so a rotated secret or a
+            // newly picked secret takes effect without a reload; data.json
+            // never holds the key.
             const resolver = this.apiKeyResolver;
+            const settingsService = this.settingsService;
             const openaiConfig: OpenAIConfig = {
                 url: settings.openaiUrl || "https://api.openai.com/v1",
                 apiKey: resolver
-                    ? () => resolver.getApiKey(settings.openaiApiKeySecretId) ?? undefined
+                    ? () =>
+                        resolver.getApiKey(
+                            settingsService?.get().openaiApiKeySecretId ??
+                                  settings.openaiApiKeySecretId
+                        ) ?? undefined
                     : undefined,
                 model: settings.openaiModel || "text-embedding-3-small",
                 maxTokens: settings.openaiMaxTokens,

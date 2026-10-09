@@ -6,12 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
--   **OpenAI API key moves into Obsidian's secret storage**: the key is no longer kept in the plugin's `data.json` (which Obsidian Sync and vault backups carry). On first load after updating, an existing key is moved into Settings → General → Secrets under `similar-notes-openai-api-key` and removed from `data.json`. The OpenAI settings now show a secret picker instead of a text box. Requires Obsidian 1.11.4 or newer; on an older Obsidian the plugin refuses to save or use a key and says so. The Gemini key is unchanged.
+-   **OpenAI API key moves into Obsidian's secret storage** (#1): the key is no longer kept in the plugin's `data.json` (which Obsidian Sync and vault backups carry). On first load after updating, an existing key is moved into Settings → General → Secrets under `similar-notes-openai-api-key` and removed from `data.json`. The OpenAI settings now show a secret picker instead of a text box. Requires Obsidian 1.11.4 or newer; on an older Obsidian the plugin refuses to save or use a key and says so. The Gemini key is unchanged.
 
 ### Improved
 
--   **Large notes no longer fail with the OpenAI provider**: a note whose chunks added up to more than 300,000 tokens was sent as one request, rejected with HTTP 400 on every attempt, and ended up in the errored list. Each note is now sent in requests of at most 2048 inputs and about 100,000 estimated tokens.
--   **Lower memory for large vaults**: the in-memory search index now keeps one compact (Float32Array) copy of each chunk's embedding and no chunk text; the text is read from IndexedDB only for the results shown. For a 1536-dimension model this cuts the index's resident size by roughly two thirds (see `docs/orama-index-memory-spec.md`).
+-   **Large notes no longer fail with the OpenAI provider** (#1): a note whose chunks added up to more than 300,000 tokens was sent as one request, rejected with HTTP 400 on every attempt, and ended up in the errored list. Each note is now sent in requests of at most 2048 inputs and about 100,000 estimated tokens.
+-   **Lower memory for large vaults** (#1): the in-memory search index now keeps one compact (Float32Array) copy of each chunk's embedding and no chunk text; the text is read from IndexedDB only for the results shown. For a 1536-dimension model this cuts the index's resident size by roughly two thirds (measured 2.9x smaller for 10,000 chunks).
 
 ## [1.7.0] - 2026-09-05
 

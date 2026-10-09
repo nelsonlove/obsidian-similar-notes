@@ -141,6 +141,58 @@ describe("OramaWorker: slim index, chunk text read back from IndexedDB", () => {
         expect((await worker.findSimilarChunks(unit(1, 0, 0, 0), 5))[0].chunk.content).toBe("new");
     });
 
+    test("concurrent misses on one hit path share a single IndexedDB read", async () => {
+        await worker.putMulti([dto({ path: "a.md", content: "t", embedding: unit(1, 0, 0, 0) })]);
+        const storage = (worker as unknown as { storage: { getByPath: (p: string) => Promise<unknown[]> } }).storage;
+        const original = storage.getByPath.bind(storage);
+        let reads = 0;
+        storage.getByPath = async (p: string) => {
+            reads++;
+            return original(p);
+        };
+
+        await Promise.all([
+            worker.findSimilarChunks(unit(1, 0, 0, 0), 5),
+            worker.findSimilarChunks(unit(1, 0, 0, 0), 5),
+            worker.findSimilarChunks(unit(1, 0, 0, 0), 5),
+        ]);
+        await worker.findSimilarChunks(unit(1, 0, 0, 0), 5);
+
+        expect(reads).toBe(1);
+        const w = worker as unknown as { contentCacheChunks: number; contentCache: Map<string, Map<number, string>> };
+        expect(w.contentCacheChunks).toBe(1);
+        expect(w.contentCache.size).toBe(1);
+    });
+
+    test("a write that lands while a read is in flight is not overwritten by the stale read", async () => {
+        await worker.putMulti([dto({ path: "a.md", content: "old", embedding: unit(1, 0, 0, 0) })]);
+        const storage = (worker as unknown as { storage: { getByPath: (p: string) => Promise<unknown[]> } }).storage;
+        const original = storage.getByPath.bind(storage);
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((r) => (release = r));
+        let first = true;
+        storage.getByPath = async (p: string) => {
+            if (first) {
+                first = false;
+                const rows = await original(p); // reads "old"
+                await gate; // ...and is held past the write below
+                return rows;
+            }
+            return original(p);
+        };
+
+        const pending = worker.findSimilarChunks(unit(1, 0, 0, 0), 5);
+        await new Promise((r) => setTimeout(r, 10));
+        await worker.removeByPath("a.md");
+        await worker.putMulti([dto({ path: "a.md", content: "new", embedding: unit(1, 0, 0, 0) })]);
+        release();
+        await pending;
+
+        // The next query must see the new text, not a cached stale "old".
+        const hits = await worker.findSimilarChunks(unit(1, 0, 0, 0), 5);
+        expect(hits[0].chunk.content).toBe("new");
+    });
+
     test("a chunk whose vector size is wrong is skipped, not inserted", async () => {
         await worker.putMulti([dto({ path: "bad.md", embedding: [1, 0] })]);
         expect(worker.count()).toBe(0);

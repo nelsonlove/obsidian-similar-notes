@@ -28,6 +28,11 @@ const CONTENT_CHARS = 1_500; // ~ a 512-token chunk of English prose
 type Gc = () => void;
 const gc = (globalThis as { gc?: Gc }).gc;
 
+// A 64-hex-character hash per note, as calculatePathHash produces.
+function fakeSha256(n: number): string {
+    return n.toString(16).padStart(8, "0").repeat(8);
+}
+
 function makeChunk(i: number): NoteChunkInternal {
     const embedding = new Array<number>(DIM);
     for (let d = 0; d < DIM; d++) {
@@ -35,7 +40,7 @@ function makeChunk(i: number): NoteChunkInternal {
     }
     return {
         path: `notes/note-${i % 500}.md`,
-        pathHash: `hash-${i % 500}`,
+        pathHash: fakeSha256(i % 500),
         title: `note-${i % 500}`,
         content: `chunk ${i} `.repeat(CONTENT_CHARS / 8).slice(0, CONTENT_CHARS),
         chunkIndex: i % 20,
