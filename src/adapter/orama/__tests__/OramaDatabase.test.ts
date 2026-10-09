@@ -193,6 +193,34 @@ describe("OramaWorker: slim index, chunk text read back from IndexedDB", () => {
         expect(hits[0].chunk.content).toBe("new");
     });
 
+    test("a query that arrives after a write does not join a pre-write read", async () => {
+        await worker.putMulti([dto({ path: "a.md", content: "old", embedding: unit(1, 0, 0, 0) })]);
+        const storage = (worker as unknown as { storage: { getByPath: (p: string) => Promise<unknown[]> } }).storage;
+        const original = storage.getByPath.bind(storage);
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((r) => (release = r));
+        let first = true;
+        storage.getByPath = async (p: string) => {
+            if (first) {
+                first = false;
+                const rows = await original(p);
+                await gate;
+                return rows;
+            }
+            return original(p);
+        };
+
+        const stale = worker.findSimilarChunks(unit(1, 0, 0, 0), 5);
+        await new Promise((r) => setTimeout(r, 10));
+        await worker.removeByPath("a.md");
+        await worker.putMulti([dto({ path: "a.md", content: "new", embedding: unit(1, 0, 0, 0) })]);
+        const fresh = worker.findSimilarChunks(unit(1, 0, 0, 0), 5);
+        release();
+
+        expect((await fresh)[0].chunk.content).toBe("new");
+        expect((await stale)[0].chunk.content).toBe("old");
+    });
+
     test("a chunk whose vector size is wrong is skipped, not inserted", async () => {
         await worker.putMulti([dto({ path: "bad.md", embedding: [1, 0] })]);
         expect(worker.count()).toBe(0);

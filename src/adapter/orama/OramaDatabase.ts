@@ -52,6 +52,8 @@ export class OramaWorker {
     private contentLoads = new Map<string, Promise<Map<number, string>>>();
     /** Bumped on every write to a path; a read caches only if unchanged. */
     private contentGeneration = new Map<string, number>();
+    /** Bumped on every init; a read from before an init never caches. */
+    private contentEpoch = 0;
 
     setLogLevel(level: log.LogLevelDesc): void {
         log.setLevel(level);
@@ -70,6 +72,7 @@ export class OramaWorker {
         this.contentCacheChunks = 0;
         this.contentLoads.clear();
         this.contentGeneration.clear();
+        this.contentEpoch++;
 
         try {
             // Initialize IndexedDB storage with vault-specific ID
@@ -257,9 +260,13 @@ export class OramaWorker {
                 }
             }
             if (removed === 0) {
-                // A page that cannot be removed would loop forever; log and stop.
-                log.error(`removeByPath: ${results.hits.length} hits for ${path} could not be removed`);
-                break;
+                // A page that cannot be removed would loop forever. Throw so
+                // the change reaches handleChangeFailure (retry, then
+                // Errored) instead of being recorded as processed with
+                // stale documents left in the index.
+                throw new Error(
+                    `removeByPath: ${results.hits.length} indexed chunks of ${path} could not be removed`
+                );
             }
         }
 
@@ -427,21 +434,31 @@ export class OramaWorker {
             return inFlight;
         }
         const generation = this.contentGeneration.get(path) ?? 0;
-        const load = (async () => {
+        const epoch = this.contentEpoch;
+        // Declared before the IIFE so its own finally can compare against it.
+        let load!: Promise<Map<number, string>>;
+        load = (async () => {
             try {
                 const byIndex = new Map<number, string>();
                 for (const chunk of await this.storage.getByPath(path)) {
                     byIndex.set(chunk.chunkIndex, chunk.content);
                 }
-                // A write to the path while the read was in flight bumped
-                // the generation; what was read may predate it, so do not
-                // cache it (the result is still returned for this query).
-                if ((this.contentGeneration.get(path) ?? 0) === generation) {
+                // A write to the path (or an init) while the read was in
+                // flight bumped the generation (or epoch); what was read may
+                // predate it, so do not cache it. The result is still
+                // returned for this query.
+                if (
+                    epoch === this.contentEpoch &&
+                    (this.contentGeneration.get(path) ?? 0) === generation
+                ) {
                     this.cacheContent(path, byIndex);
                 }
                 return byIndex;
             } finally {
-                this.contentLoads.delete(path);
+                // Only drop our own entry; a write may have replaced it.
+                if (this.contentLoads.get(path) === load) {
+                    this.contentLoads.delete(path);
+                }
             }
         })();
         this.contentLoads.set(path, load);
@@ -450,6 +467,8 @@ export class OramaWorker {
 
     private dropCachedContent(path: string): void {
         this.contentGeneration.set(path, (this.contentGeneration.get(path) ?? 0) + 1);
+        // A query arriving after this write must not join a pre-write read.
+        this.contentLoads.delete(path);
         const cached = this.contentCache.get(path);
         if (cached) {
             this.contentCacheChunks -= cached.size;
