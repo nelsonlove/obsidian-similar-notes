@@ -40,7 +40,7 @@ export class ModelSettingsSection {
     private tempOllamaModel?: string;
     private tempUseGPU?: boolean;
     private tempOpenaiUrl?: string;
-    private tempOpenaiApiKey?: string;
+    private tempOpenaiApiKeySecretId?: string;
     private tempOpenaiModel?: string;
     private tempOpenaiMaxTokens?: number;
     private tempGeminiApiKey?: string;
@@ -165,7 +165,8 @@ export class ModelSettingsSection {
         this.tempOllamaModel = this.tempOllamaModel ?? settings.ollamaModel;
         this.tempUseGPU = this.tempUseGPU ?? settings.useGPU;
         this.tempOpenaiUrl = this.tempOpenaiUrl ?? settings.openaiUrl;
-        this.tempOpenaiApiKey = this.tempOpenaiApiKey ?? settings.openaiApiKey;
+        this.tempOpenaiApiKeySecretId =
+            this.tempOpenaiApiKeySecretId ?? settings.openaiApiKeySecretId;
         this.tempOpenaiModel = this.tempOpenaiModel ?? settings.openaiModel;
         this.tempOpenaiMaxTokens = this.tempOpenaiMaxTokens ?? settings.openaiMaxTokens;
         this.tempGeminiApiKey = this.tempGeminiApiKey ?? settings.geminiApiKey;
@@ -290,16 +291,17 @@ export class ModelSettingsSection {
             return result.builders;
         } else if (this.tempModelProvider === "openai") {
             return getOpenAISettingBuilders({
+                app: this.props.app,
                 settings,
                 tempOpenaiUrl: this.tempOpenaiUrl,
-                tempOpenaiApiKey: this.tempOpenaiApiKey,
+                tempOpenaiApiKeySecretId: this.tempOpenaiApiKeySecretId,
                 tempOpenaiModel: this.tempOpenaiModel,
                 tempOpenaiMaxTokens: this.tempOpenaiMaxTokens,
                 onOpenaiUrlChange: (value: string) => {
                     this.tempOpenaiUrl = value;
                 },
-                onOpenaiApiKeyChange: (value: string) => {
-                    this.tempOpenaiApiKey = value;
+                onOpenaiApiKeySecretIdChange: (value: string) => {
+                    this.tempOpenaiApiKeySecretId = value;
                 },
                 onOpenaiModelChange: (value: string) => {
                     this.tempOpenaiModel = value;
@@ -310,7 +312,7 @@ export class ModelSettingsSection {
                 onRender: () => this.render(),
                 getTempValues: () => ({
                     url: this.tempOpenaiUrl,
-                    apiKey: this.tempOpenaiApiKey,
+                    apiKeySecretId: this.tempOpenaiApiKeySecretId,
                     model: this.tempOpenaiModel,
                     maxTokens: this.tempOpenaiMaxTokens,
                 }),
@@ -354,7 +356,7 @@ export class ModelSettingsSection {
                     tempOllamaModel: this.tempOllamaModel,
                     tempUseGPU: this.tempUseGPU,
                     tempOpenaiUrl: this.tempOpenaiUrl,
-                    tempOpenaiApiKey: this.tempOpenaiApiKey,
+                    tempOpenaiApiKeySecretId: this.tempOpenaiApiKeySecretId,
                     tempOpenaiModel: this.tempOpenaiModel,
                     tempOpenaiMaxTokens: this.tempOpenaiMaxTokens,
                     tempGeminiApiKey: this.tempGeminiApiKey,
@@ -385,7 +387,7 @@ export class ModelSettingsSection {
                 this.tempUseGPU !== settings.useGPU) ||
             (this.tempModelProvider === "openai" &&
                 (this.tempOpenaiUrl !== settings.openaiUrl ||
-                    this.tempOpenaiApiKey !== settings.openaiApiKey ||
+                    this.tempOpenaiApiKeySecretId !== settings.openaiApiKeySecretId ||
                     this.tempOpenaiModel !== settings.openaiModel ||
                     this.tempOpenaiMaxTokens !== settings.openaiMaxTokens)) ||
             (this.tempModelProvider === "gemini" &&
@@ -402,7 +404,7 @@ export class ModelSettingsSection {
         this.tempOllamaModel = undefined;
         this.tempUseGPU = undefined;
         this.tempOpenaiUrl = undefined;
-        this.tempOpenaiApiKey = undefined;
+        this.tempOpenaiApiKeySecretId = undefined;
         this.tempOpenaiModel = undefined;
         this.tempOpenaiMaxTokens = undefined;
         this.tempGeminiApiKey = undefined;

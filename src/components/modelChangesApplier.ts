@@ -1,5 +1,8 @@
 import type { SimilarNotesSettings, SettingsService } from "@/application/SettingsService";
+import { OpenAIApiKeyStore } from "@/infrastructure/OpenAIApiKeyStore";
+import { Notice } from "obsidian";
 import type { App } from "obsidian";
+import { SECRET_STORAGE_UNAVAILABLE_MESSAGE } from "./OpenAISettingsSection";
 import type MainPlugin from "../main";
 import { LoadModelModal } from "./LoadModelModal";
 import { fetchAndCacheModelInfo } from "./modelInfoCache";
@@ -15,7 +18,7 @@ export interface ModelChangesApplierParams {
     tempOllamaModel?: string;
     tempUseGPU?: boolean;
     tempOpenaiUrl?: string;
-    tempOpenaiApiKey?: string;
+    tempOpenaiApiKeySecretId?: string;
     tempOpenaiModel?: string;
     tempOpenaiMaxTokens?: number;
     tempGeminiApiKey?: string;
@@ -38,7 +41,7 @@ export async function applyModelChanges(params: ModelChangesApplierParams): Prom
         tempOllamaModel,
         tempUseGPU,
         tempOpenaiUrl,
-        tempOpenaiApiKey,
+        tempOpenaiApiKeySecretId,
         tempOpenaiModel,
         tempOpenaiMaxTokens,
         tempGeminiApiKey,
@@ -85,7 +88,14 @@ export async function applyModelChanges(params: ModelChangesApplierParams): Prom
                 updateData.ollamaModel = tempOllamaModel;
             } else if (provider === "openai") {
                 updateData.openaiUrl = tempOpenaiUrl ?? settings.openaiUrl;
-                updateData.openaiApiKey = tempOpenaiApiKey ?? settings.openaiApiKey;
+                // Only the secret ID is saved, and only when secret storage
+                // exists; the key itself never goes into data.json.
+                const secretId = tempOpenaiApiKeySecretId ?? settings.openaiApiKeySecretId;
+                if (secretId && !OpenAIApiKeyStore.fromApp(app).isAvailable()) {
+                    new Notice(`Similar Notes: ${SECRET_STORAGE_UNAVAILABLE_MESSAGE}`);
+                } else {
+                    updateData.openaiApiKeySecretId = secretId;
+                }
                 updateData.openaiModel = tempOpenaiModel ?? "text-embedding-3-small";
                 updateData.openaiMaxTokens = tempOpenaiMaxTokens ?? settings.openaiMaxTokens;
             } else if (provider === "gemini") {

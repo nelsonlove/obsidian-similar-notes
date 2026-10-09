@@ -85,6 +85,19 @@ export class Notice {
     }
 }
 
+// Mock SecretComponent (Obsidian 1.11.4+ secret picker)
+export class SecretComponent {
+    value = "";
+    constructor(_app: unknown, public containerEl: HTMLElement) {}
+    setValue(value: string): this {
+        this.value = value;
+        return this;
+    }
+    onChange(_cb: (value: string) => unknown): this {
+        return this;
+    }
+}
+
 // Mock Setting class
 export class Setting {
     settingEl: HTMLElement;

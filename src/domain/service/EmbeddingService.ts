@@ -19,11 +19,19 @@ import {
     type TransformersConfig,
 } from "./TransformersEmbeddingProvider";
 
+/** Resolves the OpenAI API key from Obsidian's secret storage by secret ID. */
+export interface ApiKeyResolver {
+    getApiKey(secretId: string | undefined): string | null;
+}
+
 export class EmbeddingService {
     private provider: EmbeddingProvider | null = null;
     private currentProviderType: "builtin" | "ollama" | "openai" | "gemini" | null = null;
 
-    constructor(private settingsService?: SettingsService) {}
+    constructor(
+        private settingsService?: SettingsService,
+        private apiKeyResolver?: ApiKeyResolver
+    ) {}
 
     // Proxy subjects that relay provider's observables
     private modelBusy$ = new Subject<boolean>();
@@ -104,9 +112,12 @@ export class EmbeddingService {
             await this.loadModel(settings.ollamaModel || "", ollamaConfig);
         } else if (newProviderType === "openai") {
             log.info("Switching to OpenAI embedding provider");
+            // The key is read from secret storage only; data.json never holds it.
             const openaiConfig: OpenAIConfig = {
                 url: settings.openaiUrl || "https://api.openai.com/v1",
-                apiKey: settings.openaiApiKey,
+                apiKey:
+                    this.apiKeyResolver?.getApiKey(settings.openaiApiKeySecretId) ??
+                    undefined,
                 model: settings.openaiModel || "text-embedding-3-small",
                 maxTokens: settings.openaiMaxTokens,
                 settingsService: this.settingsService,

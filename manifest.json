@@ -2,7 +2,7 @@
     "id": "similar-notes",
     "name": "Similar Notes",
     "version": "1.7.0",
-    "minAppVersion": "1.8.9",
+    "minAppVersion": "1.11.4",
     "description": "Find semantically similar notes using AI. On-device local models, or cloud APIs (recommended on mobile).",
     "author": "Young Lee",
     "authorUrl": "https://github.com/joybro",
